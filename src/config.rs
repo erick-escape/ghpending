@@ -26,6 +26,22 @@ pub struct Config {
     /// all-non-fork map is still meaningful and must round-trip.
     #[serde(default)]
     pub forks: HashMap<String, String>,
+    /// Self-hosted (or gitlab.com) GitLab instance whose projects are mixed
+    /// into the digest. Omitted from the file when unset.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub gitlab: Option<GitlabConfig>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq)]
+pub struct GitlabConfig {
+    /// Base URL of the instance, e.g. `https://gitlab.example.com`.
+    pub url: String,
+    /// Default user/group for `add --gitlab`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub user: Option<String>,
+    /// Full project paths (`group/subgroup/project`).
+    #[serde(default)]
+    pub repos: Vec<String>,
 }
 
 fn config_path() -> Result<PathBuf> {
@@ -138,6 +154,7 @@ mod tests {
             sort: None,
             alerts: None,
             forks: HashMap::new(),
+            gitlab: None,
         };
         let s = toml::to_string(&cfg).unwrap();
         let back: Config = toml::from_str(&s).unwrap();
@@ -154,6 +171,7 @@ mod tests {
             sort: None,
             alerts: None,
             forks: HashMap::new(),
+            gitlab: None,
         };
         let s = toml::to_string(&cfg).unwrap();
         let back: Config = toml::from_str(&s).unwrap();
@@ -181,6 +199,7 @@ mod tests {
             sort: None,
             alerts: None,
             forks: HashMap::new(),
+            gitlab: None,
         };
         let s = toml::to_string(&cfg).unwrap();
         let back: Config = toml::from_str(&s).unwrap();
@@ -196,6 +215,7 @@ mod tests {
             sort: None,
             alerts: None,
             forks: HashMap::new(),
+            gitlab: None,
         };
         let s = toml::to_string(&cfg).unwrap();
         assert!(!s.contains("theme"));
@@ -212,6 +232,7 @@ mod tests {
             sort: Some("name".into()),
             alerts: None,
             forks: HashMap::new(),
+            gitlab: None,
         };
         let s = toml::to_string(&cfg).unwrap();
         let back: Config = toml::from_str(&s).unwrap();
@@ -227,6 +248,7 @@ mod tests {
             sort: None,
             alerts: None,
             forks: HashMap::new(),
+            gitlab: None,
         };
         let s = toml::to_string(&cfg).unwrap();
         assert!(!s.contains("sort"));
@@ -243,6 +265,7 @@ mod tests {
             sort: None,
             alerts: Some(false),
             forks: HashMap::new(),
+            gitlab: None,
         };
         let s = toml::to_string(&cfg).unwrap();
         let back: Config = toml::from_str(&s).unwrap();
@@ -258,6 +281,7 @@ mod tests {
             sort: None,
             alerts: None,
             forks: HashMap::new(),
+            gitlab: None,
         };
         let s = toml::to_string(&cfg).unwrap();
         assert!(!s.contains("alerts"));
@@ -280,6 +304,7 @@ mod tests {
             sort: None,
             alerts: None,
             forks,
+            gitlab: None,
         };
         let s = toml::to_string(&cfg).unwrap();
         let back: Config = toml::from_str(&s).unwrap();
@@ -292,6 +317,31 @@ mod tests {
     }
 
     #[test]
+    fn round_trip_with_gitlab() {
+        let cfg = Config {
+            user: Some("octocat".into()),
+            repos: vec!["owner/repo".into()],
+            gitlab: Some(GitlabConfig {
+                url: "https://gitlab.example.com".into(),
+                user: None,
+                repos: vec!["group/sub/project".into()],
+            }),
+            ..Config::default()
+        };
+        let s = toml::to_string(&cfg).unwrap();
+        let back: Config = toml::from_str(&s).unwrap();
+        assert_eq!(back.gitlab, cfg.gitlab);
+        assert_eq!(back.repos, vec!["owner/repo"]);
+    }
+
+    #[test]
+    fn gitlab_absent_is_none_and_omitted() {
+        let cfg: Config = toml::from_str("repos = [\"a/b\"]\n").unwrap();
+        assert!(cfg.gitlab.is_none());
+        assert!(!toml::to_string(&cfg).unwrap().contains("gitlab"));
+    }
+
+    #[test]
     fn round_trip_forks_empty_map() {
         let cfg = Config {
             user: None,
@@ -300,6 +350,7 @@ mod tests {
             sort: None,
             alerts: None,
             forks: HashMap::new(),
+            gitlab: None,
         };
         let s = toml::to_string(&cfg).unwrap();
         let back: Config = toml::from_str(&s).unwrap();

@@ -137,6 +137,25 @@ GHPENDING_REPOS=owner/repo1,owner/repo2 ghpending
 
 Entries are trimmed and blanks are dropped. This only affects the digest — `add`, `rm` and `list` still read and write the saved `repos` list untouched.
 
+## GitLab
+
+GitLab projects (gitlab.com or self-hosted) can be mixed into the same digest. Their headers are tagged `· gitlab` and merge requests render as `MR !N`.
+
+```bash
+ghpending add --gitlab --url https://gitlab.example.com --all   # every project you're a member of
+ghpending add --gitlab --user my-group                          # a group (subgroups included) or user
+```
+
+The URL is saved, so later `add --gitlab` runs don't need it. Projects are stored in their own table:
+
+```toml
+[gitlab]
+url = "https://gitlab.example.com"
+repos = ["my-group/sub/project"]
+```
+
+The token is resolved from `$GHPENDING_GITLAB_TOKEN`, then `$GITLAB_TOKEN`, then `glab config get token --host <host>`; it needs the `read_api` scope. Forks, alerts and `--subscribed` are GitHub-only: with `--subscribed`, GitLab projects are skipped.
+
 ## Themes
 
 Pass `--theme nerv` on the command line (any subcommand) or set `theme = "nerv"` in the config file to switch to the NERV interface palette. The older purple-accent Evangelion palette is still available as `evangelion`.

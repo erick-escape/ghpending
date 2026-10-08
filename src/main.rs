@@ -5,6 +5,7 @@ mod display;
 mod format;
 mod github;
 mod github_client;
+mod gitlab;
 mod graphql;
 mod sort;
 mod theme;
@@ -65,7 +66,15 @@ async fn main() -> Result<()> {
     match &cli.command {
         Some(Commands::List) => commands::list::run()?,
         Some(Commands::Rm) => commands::remove::run()?,
-        Some(Commands::Add { user, all }) => commands::add::run(&crab, user.clone(), *all).await?,
+        Some(Commands::Add {
+            user,
+            all,
+            gitlab: true,
+            url,
+        }) => commands::add::run_gitlab(user.clone(), *all, url.clone()).await?,
+        Some(Commands::Add { user, all, .. }) => {
+            commands::add::run(&crab, user.clone(), *all).await?
+        }
         None => {
             commands::digest::run(&crab, &resolved_theme, cli.limit, cli.subscribed, sort_mode)
                 .await?

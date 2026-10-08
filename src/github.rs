@@ -54,6 +54,15 @@ pub type SubscribedItems = HashMap<String, HashSet<u64>>;
 /// missing entry, which means "unknown, needs checking").
 pub type ForkCache = HashMap<String, String>;
 
+/// Which forge a tracked repo lives on. GitHub repos come from the top-level
+/// `repos` list; GitLab projects from the `[gitlab]` config table.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum Forge {
+    #[default]
+    GitHub,
+    GitLab,
+}
+
 #[derive(Debug, Clone)]
 pub struct RepoResult {
     pub repo: String,
@@ -62,6 +71,7 @@ pub struct RepoResult {
     /// user authored on the upstream `parent` repo instead of the fork's own
     /// (usually empty) items.
     pub upstream: Option<String>,
+    pub forge: Forge,
 }
 
 impl RepoResult {
@@ -70,11 +80,17 @@ impl RepoResult {
             repo,
             status,
             upstream: None,
+            forge: Forge::GitHub,
         }
     }
 
     pub fn with_upstream(mut self, upstream: String) -> Self {
         self.upstream = Some(upstream);
+        self
+    }
+
+    pub fn with_forge(mut self, forge: Forge) -> Self {
+        self.forge = forge;
         self
     }
 }

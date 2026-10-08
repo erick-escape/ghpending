@@ -24,17 +24,27 @@ pub struct Cli {
 
 #[derive(Subcommand)]
 pub enum Commands {
-    /// Pick repos from a GitHub user/org to track
+    /// Pick repos from a GitHub (or, with --gitlab, GitLab) user/org to track
     Add {
         /// GitHub user/org to list repos from; replaces the saved one.
         /// Lists private repos too when it's your own account or an org you
         /// belong to (needs a GITHUB_TOKEN with `repo` scope).
+        /// With --gitlab: a GitLab user or group (subgroups included).
         #[arg(long, conflicts_with = "all")]
         user: Option<String>,
         /// List every repo your token can reach (owned, collaborator and
         /// org-member), private included, ignoring the saved user.
+        /// With --gitlab: every project you are a member of.
         #[arg(long)]
         all: bool,
+        /// Pick projects from GitLab instead of GitHub. Token comes from
+        /// GHPENDING_GITLAB_TOKEN, GITLAB_TOKEN, or `glab` for that host.
+        #[arg(long)]
+        gitlab: bool,
+        /// GitLab instance URL (e.g. https://gitlab.example.com); saved for
+        /// later runs. Required the first time --gitlab is used.
+        #[arg(long, value_name = "URL", requires = "gitlab")]
+        url: Option<String>,
     },
     /// Remove repos from the watch list
     Rm,

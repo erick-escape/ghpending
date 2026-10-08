@@ -3,7 +3,7 @@ use owo_colors::Style;
 use terminal_size::{Width, terminal_size};
 
 use crate::format::{relative_time, truncate_title};
-use crate::github::{ItemKind, RepoResult, RepoStatus};
+use crate::github::{Forge, ItemKind, RepoResult, RepoStatus};
 use crate::theme::Theme;
 
 fn term_width() -> usize {
@@ -88,6 +88,10 @@ fn render_inner_limited(
         if let Some(suffix) = &fork_suffix {
             body.push_str(&paint(suffix, color, theme.meta));
         }
+        let gitlab = result.forge == Forge::GitLab;
+        if gitlab {
+            body.push_str(&paint("  · gitlab", color, theme.meta));
+        }
         body.push('\n');
 
         match &result.status {
@@ -107,8 +111,10 @@ fn render_inner_limited(
                     let (kind_str, number_str, title_str) = match item.kind {
                         ItemKind::PullRequest => {
                             let style = if item.mine { theme.mine } else { theme.pr };
-                            let ks = paint("PR ", color, style);
-                            let ns = format!("#{}", item.number);
+                            // GitLab merge requests use their own `!iid` notation.
+                            let (label, sigil) = if gitlab { ("MR ", '!') } else { ("PR ", '#') };
+                            let ks = paint(label, color, style);
+                            let ns = format!("{sigil}{}", item.number);
                             let title = truncate_title(&item.title, title_max);
                             (ks, ns, title)
                         }
@@ -487,6 +493,26 @@ mod tests {
         let out = render_inner(&results, &Theme::default_theme(), false, 80);
         let header_line = out.lines().find(|l| l.contains("━━")).unwrap();
         assert_eq!(header_line, "━━ a/b");
+    }
+
+    #[test]
+    fn gitlab_project_is_tagged_and_uses_mr_notation() {
+        let results = vec![
+            RepoResult::new(
+                "group/sub/project".into(),
+                RepoStatus::Items(vec![
+                    make_item(ItemKind::PullRequest, 12, "Add login", 0),
+                    make_item(ItemKind::Issue, 7, "Crash on start", 0),
+                ]),
+            )
+            .with_forge(crate::github::Forge::GitLab),
+        ];
+        let out = render_inner(&results, &Theme::default_theme(), false, 80);
+        let header_line = out.lines().find(|l| l.contains("━━")).unwrap();
+        assert_eq!(header_line, "━━ group/sub/project  · gitlab");
+        assert!(out.contains("  MR   !12  Add login"));
+        assert!(out.contains("  ISS  #7  Crash on start"));
+        assert!(!out.contains("PR "));
     }
 
     #[test]

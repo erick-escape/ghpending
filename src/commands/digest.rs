@@ -6,10 +6,10 @@ use indicatif::{ProgressBar, ProgressStyle};
 use octocrab::Octocrab;
 use tokio::time::timeout;
 
-use crate::github::{RepoResult, RepoStatus};
+use crate::github::{Forge, RepoError, RepoResult, RepoStatus};
 use crate::sort::SortMode;
 use crate::theme::Theme;
-use crate::{config, display, github, github_client, graphql, sort};
+use crate::{config, display, github, github_client, gitlab, graphql, sort};
 
 const SUBSCRIBED_FETCH_TIMEOUT: Duration = Duration::from_secs(30);
 const MAX_CONCURRENT_ALERT_FETCHES: usize = 4;
@@ -29,8 +29,17 @@ pub async fn run(
     // `cfg.repos` that save would silently overwrite the tracked list on
     // disk with the one-off override.
     let repos = config::repos_override_from_env().unwrap_or_else(|| cfg.repos.clone());
+    // GitLab has no list-level "subscribed" filter, so --subscribed shows
+    // GitHub items only.
+    let gitlab_cfg = cfg
+        .gitlab
+        .clone()
+        .filter(|gl| !gl.repos.is_empty() && !subscribed_only);
+    if subscribed_only && cfg.gitlab.as_ref().is_some_and(|gl| !gl.repos.is_empty()) {
+        eprintln!("note: --subscribed covers GitHub only; GitLab projects are skipped");
+    }
 
-    if repos.is_empty() {
+    if repos.is_empty() && gitlab_cfg.is_none() {
         println!("No repos tracked. Run `ghpending add` to get started.");
         return Ok(());
     }
@@ -44,61 +53,24 @@ pub async fn run(
     spinner.set_message("Fetching…");
     spinner.enable_steady_tick(Duration::from_millis(100));
 
-    let subscribed = if subscribed_only {
-        Some(
-            match timeout(
-                SUBSCRIBED_FETCH_TIMEOUT,
-                github::fetch_subscribed_items(crab),
-            )
-            .await
-            {
-                Ok(Ok(subscribed)) => subscribed,
-                Ok(Err(error)) => {
-                    spinner.finish_and_clear();
-                    return Err(error);
-                }
-                Err(_) => {
-                    spinner.finish_and_clear();
-                    anyhow::bail!(
-                        "listing subscribed issues and pull requests timed out after 30s"
-                    );
-                }
-            },
-        )
-    } else {
-        None
+    let github_fetch = async {
+        if repos.is_empty() {
+            Ok(Vec::new())
+        } else {
+            github_results(crab, &mut cfg, &repos, subscribed_only).await
+        }
     };
-    let (mut results, forks_to_persist) = if use_graphql(github_client::github_token().is_some()) {
-        let (results, fork_map) =
-            graphql::fetch_repos_batched(crab, &repos, subscribed.as_ref(), &cfg.forks).await;
-        (results, merge_fork_cache(&cfg.forks, fork_map))
-    } else {
-        let (results, detected) =
-            github::fetch_repos_rest(crab, &repos, subscribed.as_ref(), &cfg.forks).await;
-        (results, merge_fork_cache(&cfg.forks, detected))
+    let gitlab_fetch = async {
+        match &gitlab_cfg {
+            Some(gl) => gitlab_results(gl).await,
+            None => Vec::new(),
+        }
     };
-
+    let (github, gitlab) = tokio::join!(github_fetch, gitlab_fetch);
     spinner.finish_and_clear();
 
-    if let Some(forks) = forks_to_persist {
-        cfg.forks = forks;
-        // Best-effort: the fork cache is just an optimization, so a save
-        // failure (e.g. a read-only config dir) shouldn't block the digest.
-        let _ = config::save(&cfg);
-    }
-
-    let viewer = resolve_viewer(crab, &cfg).await;
-
-    // Alerts are never filtered by --subscribed: that filter operates on
-    // the subscribed-issues set fetched above, which alerts never enter.
-    if github_client::github_token().is_some()
-        && cfg.alerts.unwrap_or(true)
-        && let Some(login) = viewer.as_deref()
-    {
-        augment_with_alerts(crab, &mut results, login).await;
-    }
-
-    mark_and_order_items(&mut results, viewer.as_deref());
+    let mut results = github?;
+    results.extend(gitlab);
 
     sort::sort_results(&mut results, sort_mode);
 
@@ -110,6 +82,94 @@ pub async fn run(
     }
 
     Ok(())
+}
+
+/// Fetches, alert-augments and marks the GitHub side of the digest. Persists
+/// the fork-detection cache into `cfg` as a side effect.
+async fn github_results(
+    crab: &Octocrab,
+    cfg: &mut config::Config,
+    repos: &[String],
+    subscribed_only: bool,
+) -> Result<Vec<RepoResult>> {
+    let subscribed = if subscribed_only {
+        Some(
+            match timeout(
+                SUBSCRIBED_FETCH_TIMEOUT,
+                github::fetch_subscribed_items(crab),
+            )
+            .await
+            {
+                Ok(Ok(subscribed)) => subscribed,
+                Ok(Err(error)) => return Err(error),
+                Err(_) => {
+                    anyhow::bail!(
+                        "listing subscribed issues and pull requests timed out after 30s"
+                    );
+                }
+            },
+        )
+    } else {
+        None
+    };
+    let (mut results, forks_to_persist) = if use_graphql(github_client::github_token().is_some()) {
+        let (results, fork_map) =
+            graphql::fetch_repos_batched(crab, repos, subscribed.as_ref(), &cfg.forks).await;
+        (results, merge_fork_cache(&cfg.forks, fork_map))
+    } else {
+        let (results, detected) =
+            github::fetch_repos_rest(crab, repos, subscribed.as_ref(), &cfg.forks).await;
+        (results, merge_fork_cache(&cfg.forks, detected))
+    };
+
+    if let Some(forks) = forks_to_persist {
+        cfg.forks = forks;
+        // Best-effort: the fork cache is just an optimization, so a save
+        // failure (e.g. a read-only config dir) shouldn't block the digest.
+        let _ = config::save(cfg);
+    }
+
+    let viewer = resolve_viewer(crab, cfg).await;
+
+    // Alerts are never filtered by --subscribed: that filter operates on
+    // the subscribed-issues set fetched above, which alerts never enter.
+    if github_client::github_token().is_some()
+        && cfg.alerts.unwrap_or(true)
+        && let Some(login) = viewer.as_deref()
+    {
+        augment_with_alerts(crab, &mut results, login).await;
+    }
+
+    mark_and_order_items(&mut results, viewer.as_deref());
+    Ok(results)
+}
+
+/// Fetches and marks the GitLab side of the digest. Never fails as a whole:
+/// a bad URL or unreachable instance becomes a per-project error.
+async fn gitlab_results(gl: &config::GitlabConfig) -> Vec<RepoResult> {
+    let client = match gitlab::GitlabClient::new(&gl.url) {
+        Ok(client) => client,
+        Err(error) => {
+            return gl
+                .repos
+                .iter()
+                .map(|repo| {
+                    RepoResult::new(
+                        repo.clone(),
+                        RepoStatus::Error(RepoError::Api(error.to_string())),
+                    )
+                    .with_forge(Forge::GitLab)
+                })
+                .collect();
+        }
+    };
+    let (mut results, viewer) = tokio::join!(
+        gitlab::fetch_projects(&client, &gl.repos),
+        gitlab::authenticated_username(&client)
+    );
+    let viewer = viewer.or_else(|| gl.user.clone());
+    mark_and_order_items(&mut results, viewer.as_deref());
+    results
 }
 
 /// GitHub's GraphQL endpoint has no anonymous mode, so without a token we

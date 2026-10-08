@@ -6,7 +6,7 @@ use octocrab::Octocrab;
 use tokio::time::timeout;
 
 use crate::github::ListSource;
-use crate::{config, github};
+use crate::{config, github, gitlab};
 
 const API_TIMEOUT: Duration = Duration::from_secs(30);
 
@@ -105,6 +105,91 @@ pub async fn run(crab: &Octocrab, user: Option<String>, all: bool) -> Result<()>
     cfg.repos.sort();
     config::save(&cfg)?;
     println!("Saved. Tracking {} repo(s) total.", cfg.repos.len());
+    Ok(())
+}
+
+/// `add --gitlab`: pick projects from a GitLab user/group (or every project
+/// you're a member of) and store them under `[gitlab].repos`. Without
+/// `--user`, falls back to the saved GitLab user, then to membership.
+pub async fn run_gitlab(user: Option<String>, all: bool, url: Option<String>) -> Result<()> {
+    let mut cfg = config::load()?;
+    let mut gl = cfg.gitlab.clone().unwrap_or_default();
+
+    if let Some(url) = url {
+        let url = url.trim().trim_end_matches('/').to_owned();
+        if url.is_empty() {
+            bail!("--url cannot be empty");
+        }
+        gl.url = url;
+    }
+    if gl.url.is_empty() {
+        let url = Text::new("GitLab URL (e.g. https://gitlab.example.com):").prompt()?;
+        gl.url = url.trim().trim_end_matches('/').to_owned();
+        if gl.url.is_empty() {
+            bail!("a GitLab URL is required");
+        }
+    }
+
+    let client = gitlab::GitlabClient::new(&gl.url)?;
+
+    let namespace = if all {
+        None
+    } else {
+        match resolve_user(user, gl.user.clone()) {
+            UserChoice::Override(u) => {
+                gl.user = Some(u.clone());
+                Some(u)
+            }
+            UserChoice::Saved(u) => Some(u),
+            UserChoice::Prompt => None,
+            UserChoice::Blank => bail!("--user cannot be empty"),
+        }
+    };
+
+    let found = match &namespace {
+        Some(ns) => {
+            with_api_timeout(
+                gitlab::list_namespace_projects(&client, ns),
+                "listing GitLab projects timed out after 30s",
+            )
+            .await?
+        }
+        None => {
+            with_api_timeout(
+                gitlab::list_member_projects(&client),
+                "listing GitLab projects timed out after 30s",
+            )
+            .await?
+        }
+    };
+
+    if found.is_empty() {
+        println!("No GitLab projects found.");
+        cfg.gitlab = Some(gl);
+        config::save(&cfg)?;
+        return Ok(());
+    }
+
+    let defaults: Vec<usize> = found
+        .iter()
+        .enumerate()
+        .filter_map(|(i, r)| gl.repos.contains(r).then_some(i))
+        .collect();
+
+    let selected = MultiSelect::new("Select GitLab projects to track:", found)
+        .with_default(&defaults)
+        .prompt()?;
+
+    for repo in selected {
+        if !gl.repos.contains(&repo) {
+            gl.repos.push(repo);
+        }
+    }
+    gl.repos.sort();
+    let count = gl.repos.len();
+    cfg.gitlab = Some(gl);
+    config::save(&cfg)?;
+    println!("Saved. Tracking {count} GitLab project(s).");
     Ok(())
 }
 
